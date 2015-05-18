@@ -1,0 +1,422 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Hybrid ordering &mdash; msg-notes 0.0.0 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/classic.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '0.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="msg-notes 0.0.0 documentation" href="../index.html" />
+    <link rel="up" title="Appendices" href="index.html" />
+    <link rel="prev" title="Extra topics" href="04-extras.html" /> 
+  </head>
+  <body role="document">
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="04-extras.html" title="Extra topics"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">msg-notes 0.0.0 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Appendices</a> &raquo;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="hybrid-ordering">
+<h1>Hybrid ordering<a class="headerlink" href="#hybrid-ordering" title="Permalink to this headline">¶</a></h1>
+<p>Causal orders have some nice properties explained elsewhere, but are also hard
+to implement correctly when not everyone is allowed to see the full history.
+(At the time of writing, we don&#8217;t have a full solution for this yet.)</p>
+<p>One alternative is to have a total order for membership operations, while
+leaving messages to be in a causal order. Here, we present a scheme for this
+that requires no extra client packets, but does require one extra round of
+latency - the minimum necessary for a total order that preserves context. Note
+however that this is strictly necessary only for the membership operations - so
+perhaps an intelligent application can use it even for asynchronous messaging
+during periods of static membership.</p>
+<div class="section" id="consistent-server-order">
+<h2>Consistent server order<a class="headerlink" href="#consistent-server-order" title="Permalink to this headline">¶</a></h2>
+<p>We expect a server that receives all packets <a class="footnote-reference" href="#npkt" id="id1">[1]</a> from all clients, and
+echoes them back to everyone in the same total order. This is quite standard
+for existing instant messaging protocols such as XMPP, and requires no extra
+logic on the server side. Therefore, clients can transparently run this scheme
+on top of existing infrastructure.</p>
+<p>We do not assume that the server is honest: we outline a scheme where clients
+can verify this property. For each member, as they receive interesting packets
+from the server, they calculate a &#8220;chain hash&#8221; (CH) for it:</p>
+<blockquote>
+<div><div class="line-block">
+<div class="line">pId = H(packet) </div>
+<div class="line">CH(pId) = H(CH(previous pId or &#8220;&#8221;) || pId || pId-type)</div>
+</div>
+</div></blockquote>
+<p>By &#8220;interesting&#8221;, we mean packets that we care about verifying the consistency
+of the server order of. We can ignore other packets, such as message packets
+(which are already authenticated and consistent via other mechanisms described
+earlier), rejected packets, and junk or resent packets. &#8220;Interesting&#8221; will be
+defined in more detail later. (It should be clear from context whether we are
+talking about packets or only &#8220;interesting&#8221; packets.)</p>
+<p>pId-type is an optional piece of information, if we want to also check that
+everyone interprets the packet in the same way, in case this might be ambiguous
+depending on local state, environment, etc.</p>
+<p>We assume that packets are unique, so that our hash-defined packet ids are also
+unique. The membership operation, and anything else that is &#8220;interesting&#8221;, must
+satisfy this property. This should not be difficult; indeed otherwise it would
+be susceptible to replay attacks. Duplicate packets should be ignored. <a class="footnote-reference" href="#nhsh" id="id2">[2]</a></p>
+<p>The CH of a packet, as calculated by a member, attests to the server order of
+all older packets up to and including it, that they received from the server.
+Note that even the author of the packet cannot calculate its CH until they
+receive it back from the server, since they may receive other packets between
+when they send and receive it.</p>
+<p>Periodically, everyone authenticates and sends the following information:</p>
+<blockquote>
+<div>( last pId seen, CH(pId) )</div></blockquote>
+<p>It is important that this be authenticated; it could be done as part of a
+message in our (authenticated) causal order history graph. Then, we may verify
+consistency by doing something similar to the mechanism described in
+<a class="reference internal" href="../causal/02-consistency.html"><em>Consistency</em></a>.</p>
+<p>So, we have a verifiable server-dictated total order. This is a topological
+ordering of the underlying partial order of packets. It does <em>not</em> preserve
+context - when we send a packet out, we have some context, but the server may
+send us (and others) more packets between this context and our packet. (TODO:
+draw a diagram for this.) However, we can use this order as a tool to build a
+total order that <em>does</em> preserve context, at least for membership operations.</p>
+<table class="docutils footnote" frame="void" id="npkt" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id1">[1]</a></td><td>We use the term &#8220;packet&#8221; to refer to transport-level packets; the
+term &#8220;message&#8221; refers specifically to verified-decrypted messages, that
+comprise the causal order history graph.</td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="nhsh" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id2">[2]</a></td><td>Our definition allows an outside observer to potentially calculate
+pIds and CHs. This is not a problem for anything we describe, but may cause
+a problem for applications that build on top of us. One may use a different
+definition, but it would need to be done based on how packets are encoded,
+which is specific to the membership operation. If it is necessary, one may
+adapt <a class="reference internal" href="04-extras.html#encoding-message-identifiers"><span>Defining message identifiers</span></a> to apply instead to this context.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="section" id="context-preserving-total-order">
+<h2>Context-preserving total order<a class="headerlink" href="#context-preserving-total-order" title="Permalink to this headline">¶</a></h2>
+<p>We&#8217;ll abstract out the idea of a membership operation as much possible - so the
+implementation could be a group key agreement, a dictator handing out a key,
+etc. However, it must satisfy the following:</p>
+<p>We assume that the membership operation handles internal authentication and
+ordering of its own packets. Packets cannot be replayed and misinterpreted to
+be part of a different operation. If the operation finishes (with success or
+failure) or aborts early, then this action is authentic. If it successfully
+finishes (&#8220;completes&#8221;), then any resulting information is also authentic.</p>
+<p>We also assume that the operation is initiated and finished in-band, in the
+server order. This means there must be a precise and well-defined first packet
+pI, that the initiator sends, and last packet pF, that the server may get to
+ultimately decide, if e.g. concurrent packets in a &#8220;final round&#8221; could validly
+be reordered without intefering with the execution of the operation.</p>
+<p>When everyone, except the sender of pF, receives pF, they are able to locally
+complete the operation, and also have confidence <a class="footnote-reference" href="#ncon" id="id3">[3]</a> that everyone else
+has done so because of the consistency of the server order. For the sender of
+pF, they may be able to complete the operation when they receive the packet
+<em>preceding</em> pF, but they must, like the others, wait until they receive pF
+back, to have confidence that everyone else has also completed the operation.
+<a class="footnote-reference" href="#nack" id="id4">[4]</a> In either case, it should be obvious to everyone how to identify pF,
+by looking at the server order.</p>
+<p>Demonstrably, pF comes after pI, both in the server order and from the point
+of view of its sender (i.e. context-preserving). We&#8217;ll now outline a scheme
+that extends this across operations, and also handles failures and aborts.</p>
+<p>To ensure that the server doesn&#8217;t reorder operations, any pI proposal must
+reference the pF from the previous operation (the next section deals with the
+case if there was no previous). It should also reference the latest messages in
+the (partially-ordered) ongoing session derived from pF. This information must
+be authenticated eventually; we go into strategies for this further below.</p>
+<p>There may be concurrent multiple different pI proposals that reference the same
+pF. We use the server order to &#8220;break ties&#8221; between these - for all proposals
+that point to a given pF, only the first one counts, and members ignore/reject
+every other such proposal.</p>
+<p>Likewise, if a membership operation is taking too long (e.g. maybe someone has
+gone offline, so it will never finish) then an existing member may propose to
+send an &#8220;abort&#8221; packet. Concurrently, someone may propose a pF that completes
+the operation; or someone may propose a &#8220;fail&#8221;, if the operation supports that.
+Here again, the server order breaks ties.</p>
+<p>If the membership operation supports outsider initiation (i.e. <em>join</em> as well
+as <em>invite</em>), it should be the reply packet that is treated as the pI within
+our scheme here. This is authored by an insider who knows the CH of the last
+packet, which (as above) should be included in the reply too so the new member
+can verify the server order consistency. As previously, ties between concurrent
+reply proposals are broken by server-order.</p>
+<p>One attack the server can execute here is to block operations &#8220;innocently&#8221;. For
+example, when victim V sends a pI, the server first passes it out-of-band to a
+co-operating insider M who generates a conflicting pI. Then, it broadcasts this
+conflicting pI before the victim&#8217;s, negating it within the bounds of &#8220;normal
+behaviour&#8221; as defined by our scheme. This is a problem because the attack is
+not detectable. For now however, we&#8217;ll ignore it, since this power is inherent
+to the idea of a server-dictated total order. This is not ideal of course, and
+we welcome suggestions for improvements.</p>
+<p>Note that this scheme also works in the degenerate case of a 1-packet operation
+(e.g. with a key dictator) - in this case, a packet may be both a pI proposal
+and a pF that is accepted immediately. Implementors should check for this case
+if appropriate, by immediately trying to decode a pI packet as a pF packet if
+the former is accepted.</p>
+<p>So, in this context, &#8220;interesting&#8221; packets for which we must verify server
+order for (see previous section) are accepted pI and pF proposals. As for the
+pId-type we mentioned as a way to also commit the &#8220;interpretation&#8221; of packets
+into the chain hash consistency check, we&#8217;ll use &#8220;1&#8221; for pI, &#8220;2&#8221; for pF, and
+&#8220;3&#8221; for pI+pF packets. We don&#8217;t include rejected packets in this definition,
+because they are redundant; and actually this makes things easier later when we
+run into partial visibility issues.</p>
+<p>Every pI proposal must contain the following information:</p>
+<ul class="simple">
+<li>last accepted pF, to preserve the author&#8217;s context</li>
+<li>CH(pF), for new members to verify server-order consistency</li>
+<li>latest messages seen, in the ongoing session derived from pF</li>
+</ul>
+<p>This information must be authenticated. If the membership operation supports
+&#8220;additional authenticated data&#8221;, we can simply use this feature. Otherwise,
+perhaps such a feature can be added. For example, some existing protocols
+retroactively authenticate the protocol version to prevent downgrade attacks;
+the same mechanism could be adapted to authenticate arbitrary data. Typically
+this is not private; but as argued below, neither does the scheme we present
+here try to protect the privacy of group membership changes.</p>
+<p>If it is not feasible to achieve in-operation authentication, a fallback is to
+resend this information as part of a message in the newly-created authenticated
+session. Others should expect this message, abort the session if it is not
+received within some timeout, or verify it against the older unauthenticated
+claims if it is received. This keeps the membership operation component more
+decoupled from the rest of the system. However, it would take longer to achieve
+our desired security property.</p>
+<p>So, now we have a context-preserving authenticated session-global total order
+of membership operations:</p>
+<ul>
+<li><div class="first line-block">
+<div class="line">by our requirements of the membership operation,</div>
+<div class="line">every pF is authenticated and linked to some earlier pI</div>
+</div>
+</li>
+<li><div class="first line-block">
+<div class="line">by the server order,</div>
+<div class="line">every pF is unique for the pI it is linked to - others are rejected</div>
+</div>
+</li>
+<li><div class="first line-block">
+<div class="line">by our requirements of implementations of our scheme,</div>
+<div class="line">every pI is authenticated and linked to some earlier pF</div>
+</div>
+</li>
+<li><div class="first line-block">
+<div class="line">by the server order,</div>
+<div class="line">every pI is unique for the pF it is linked to - others are rejected</div>
+</div>
+</li>
+</ul>
+<table class="docutils footnote" frame="void" id="ncon" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id3">[3]</a></td><td>Or rather, they <em>will have</em> confidence, since consistency checks
+inherently must occur <em>after</em> the packet has been received and processed by
+the component that executes membership operations.</td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="nack" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id4">[4]</a></td><td>Note the similarity in reasoning on why <a class="reference internal" href="../causal/02-consistency.html#full-ack"><span>we must ack messages
+ourselves</span></a>.</td></tr>
+</tbody>
+</table>
+</div>
+<div class="section" id="corner-cases-caused-by-partial-visibility">
+<h2>Corner cases caused by partial visibility<a class="headerlink" href="#corner-cases-caused-by-partial-visibility" title="Permalink to this headline">¶</a></h2>
+<p>Partial visibility causes some corner cases here too. To start off with, we&#8217;ll
+clarify some of our assumptions on the membership operation and visibility.</p>
+<p>We require that all pI proposals must be identifiable by all channel members,
+even those not part of the cryptographic session. We feel this is necessary,
+the alternatives seem much more complex:</p>
+<ul class="simple">
+<li>If they are only identifiable by current session members, then new members
+cannot be part of the acceptance process and must be told explictly which one
+was accepted. This requires further packets, but the operation may complete
+(or even have further operations accepted) concurrently in the meantime.</li>
+<li>If they are only identifiable by current members and the specific new members
+they are including, then different proposals on top of the same prev_pF would
+be visible to different members. Then, we also require further packets to
+reach an agreement on what was accepted.</li>
+</ul>
+<p>The server has this metadata anyway. If members require session membership
+changes to be private, we will need to achieve this some other way, i.e. not
+using a hybrid ordering on top of a server transport.</p>
+<p>However, we do assume that we may not be able to identify all pF proposals for
+operations not involving us. Even if failure proposals are visible, success
+proposals may not be, since these could depend on the cryptographic state of
+the group. This means we may have uncertainty about which pF proposal was
+accepted. This causes some more complexity, but is easier to work with.</p>
+<div class="section" id="entering-a-channel">
+<h3>Entering a channel<a class="headerlink" href="#entering-a-channel" title="Permalink to this headline">¶</a></h3>
+<p>The scheme described in the previous section lets members agree on which pI
+proposal to accept, if they know the full server order from its prev_pF up to
+it. However, this is not the case for new members that entered a channel after
+the prev_pF - they don&#8217;t know if other proposals were sent before they entered.</p>
+<p>So, we must extend the scheme slightly. pI proposals that include new members,
+must be issued after these new members are already in the channel. As above, it
+must reference a prev_pF and the CH corresponding to this. To ensure that new
+members who have not seen prev_pF can distinguish these from ones sent before
+they joined, it should explicitly reference their uIds, but <em>only if</em>:</p>
+<ul class="simple">
+<li>at the time of sending, the sender has seen the server add these members, and</li>
+<li>there were no other pI proposals between the prev_pF, and the latest channel
+event that these members. Such a proposal would have been already accepted,
+so the sender can simply test locally that there is no ongoing operation.</li>
+</ul>
+<p>If this condition cannot be satisfied, then the sender should wait until the
+current operation is over, before trying to issue the pI proposal again - this
+time with a different prev_pF to apply the above conditions to. As with other
+metadata associated with pI proposals, this should eventually be authenticated.</p>
+<p>From new members&#8217; point of view, we assume that the first pI proposal we see
+that mentions both our uId and a new prev_pF we haven&#8217;t seen referenced by an
+older proposal, is accepted by the server-order. This may not be true, but then
+the server-order consistency check would fail later.</p>
+<p>If we see a pI proposal that doesn&#8217;t mention our uId, we ignore it. We must
+then also ignore subsequent pI proposals pointing to the same prev_pF <em>even if
+they mention us</em>, since these are clearly rejected by the server-order. Later,
+we expect to receive a pI that points to a prev_pF that we <em>can</em> see. Since we
+may not be able to identify pF proposals, we must calculate and store pIds for
+<em>every single packet</em> until we see a pI that is visible to us, to be able to
+check whether its prev_pF was seen by us or not. This is a bit awkward, but is
+not a significant cost; suggestions for improvements welcome.</p>
+<p>From old members&#8217; point of view, we accept or reject this pI as normal. It is
+safe to ignore checking the uId claims, since if they are incorrect then the
+server-order consistency check would fail later.</p>
+<p>In fact, there are lots of failure modes here, with members potentially lying
+about which members they saw join, what their prev_pF is, etc. Rather than
+trying to enumerate and handle them all, we just depend on our server-order
+consistency mechanism, and issue an error after a timeout if this isn&#8217;t
+reached. This is why adding only accepted packets into our CH is better than
+also adding rejected packets too - the CH also &#8220;commits&#8221; to which packets we
+accepted. If we also added rejected packets here, we could have some failure
+modes where members accepted different proposals yet still have the same CH.</p>
+<p>To clarify, what this scheme does is to allow the protocol to work succesfully
+under <em>innocent</em> race conditions caused by asynchronity and partial visibility.
+Attacks cause failures in the server-order consistency checks, or others.</p>
+<p>TODO: iron out the case of what to do when joining a new channel with no
+existing session. Roughly along the lines of, locally generate random prev_pF.</p>
+</div>
+<div class="section" id="members-leave-during-proposal-echo-delay">
+<h3>Members leave during proposal echo delay<a class="headerlink" href="#members-leave-during-proposal-echo-delay" title="Permalink to this headline">¶</a></h3>
+<p>When we send a pI proposal, even if at this time the new members are in the
+channel, we may see them leave the channel before our proposal is echoed back.
+If this happens, i.e. if any pI proposal is echoed into the channel at a point
+when any of the new members are not in the channel, then this proposal is
+rejected, even if it would otherwise be accepted. The membership of the channel
+should be obvious to everyone in the channel, assuming the server echoes back
+events in the same order.</p>
+<p>This applies to both pI and pF proposals.</p>
+</div>
+<div class="section" id="failure-of-others-to-exclude-self">
+<h3>Failure of others to exclude self<a class="headerlink" href="#failure-of-others-to-exclude-self" title="Permalink to this headline">¶</a></h3>
+<p>When we are being excluded but this fails, we should be able to remain in both
+the channel and session, and stay consistent with everyone. (If it succeeds
+then we&#8217;ll get kicked and know to close the session.) But by our assumptions,
+we may not be able to identify which pF proposal was accepted. Therefore,
+someone needs to tell us this explicitly after it&#8217;s decided. Again, they could
+lie to us, but server-order consistency checks would fail.</p>
+<p>TODO: consider the alternative of just assuming the operation failed, unless
+someone explicitly kicks us out of the channel - which we should already treat
+as an trigger to part the session locally.</p>
+</div>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="../index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Hybrid ordering</a><ul>
+<li><a class="reference internal" href="#consistent-server-order">Consistent server order</a></li>
+<li><a class="reference internal" href="#context-preserving-total-order">Context-preserving total order</a></li>
+<li><a class="reference internal" href="#corner-cases-caused-by-partial-visibility">Corner cases caused by partial visibility</a><ul>
+<li><a class="reference internal" href="#entering-a-channel">Entering a channel</a></li>
+<li><a class="reference internal" href="#members-leave-during-proposal-echo-delay">Members leave during proposal echo delay</a></li>
+<li><a class="reference internal" href="#failure-of-others-to-exclude-self">Failure of others to exclude self</a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="04-extras.html"
+                        title="previous chapter">Extra topics</a></p>
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="../_sources/appendix/05-hybrid.txt"
+            rel="nofollow">Show Source</a></li>
+    </ul>
+   </div>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" />
+      <input type="submit" value="Go" />
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+    <p class="searchtip" style="font-size: 90%">
+    Enter search terms or a module, class or function name.
+    </p>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="04-extras.html" title="Extra topics"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">msg-notes 0.0.0 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" >Appendices</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2014-2015 Mega Limited, licensed under CC-BY-SA-4.0.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.1.
+    </div>
+  </body>
+</html>

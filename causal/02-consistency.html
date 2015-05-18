@@ -1,0 +1,446 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    
+    <title>Consistency &mdash; msg-notes 0.0.0 documentation</title>
+    
+    <link rel="stylesheet" href="../_static/classic.css" type="text/css" />
+    <link rel="stylesheet" href="../_static/pygments.css" type="text/css" />
+    
+    <script type="text/javascript">
+      var DOCUMENTATION_OPTIONS = {
+        URL_ROOT:    '../',
+        VERSION:     '0.0.0',
+        COLLAPSE_INDEX: false,
+        FILE_SUFFIX: '.html',
+        HAS_SOURCE:  true
+      };
+    </script>
+    <script type="text/javascript" src="../_static/jquery.js"></script>
+    <script type="text/javascript" src="../_static/underscore.js"></script>
+    <script type="text/javascript" src="../_static/doctools.js"></script>
+    <link rel="top" title="msg-notes 0.0.0 documentation" href="../index.html" />
+    <link rel="up" title="Causal ordering" href="index.html" />
+    <link rel="next" title="Freshness and presence" href="03-freshness.html" />
+    <link rel="prev" title="Ordering" href="01-ordering.html" /> 
+  </head>
+  <body role="document">
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             accesskey="I">index</a></li>
+        <li class="right" >
+          <a href="03-freshness.html" title="Freshness and presence"
+             accesskey="N">next</a> |</li>
+        <li class="right" >
+          <a href="01-ordering.html" title="Ordering"
+             accesskey="P">previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">msg-notes 0.0.0 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" accesskey="U">Causal ordering</a> &raquo;</li> 
+      </ul>
+    </div>  
+
+    <div class="document">
+      <div class="documentwrapper">
+        <div class="bodywrapper">
+          <div class="body" role="main">
+            
+  <div class="section" id="consistency">
+<h1>Consistency<a class="headerlink" href="#consistency" title="Permalink to this headline">¶</a></h1>
+<p>One necessary property of a group session is that everyone sees the same
+transcript - that is, the same set of messages and their relative orders.</p>
+<div class="section" id="concepts">
+<h2>Concepts<a class="headerlink" href="#concepts" title="Permalink to this headline">¶</a></h2>
+<p>Consistency can be viewed as a case of metadata verification. Each message has
+a sender, a history, and a set of recipients. We verify the sender using
+cryptographic authentication, verify history by enforcing transitivity, and now
+we need a way to verify recipients, aka ensure consistency.</p>
+<p>Consistency is <em>not</em> consensus. Consensus is the problem of agreeing on a
+future value or action, that has not been decided yet. With consistency, we
+only need to agree on what has already happened in the past. So we don&#8217;t need
+to use Byzantine fault tolerance techniques (which have probabilistic success),
+and can achieve a stronger guarantee with simpler techniques.</p>
+<p>With consistency, we only achieve &#8220;first-order&#8221; knowledge - that is, for each
+message m, from the point of view of a member u, u knows (P) everyone has seen
+m, but u doesn&#8217;t know if (Q) others know P, nor if (R) they know u knows P,
+etc. That&#8217;s OK; we don&#8217;t foresee any situation where we need those latter
+properties, so they are lesser concerns. For comparison, consensus requires us
+to achieve <a class="reference external" href="https://en.wikipedia.org/wiki/Common_knowledge_(logic)">common knowledge</a> (i.e. &#8220;infinite-order&#8221; knowledge).</p>
+<p>Previous proposals for consistency have typically involved running a process at
+the end of a session, to ensure consistency for the whole session. The process
+is simple to describe but quite costly in terms of information that needs to be
+exchanged for mutual verification.</p>
+<p>We prefer an incremental model of consistency, where we continually verify the
+other recipients of messages we delivered. Our causal order provides enough
+bookkeeping information over the lifetime of the session, such that there is
+minimal communication overhead in doing so.</p>
+<p>Since we are verifying other recipients, this must be done <em>after</em> we deliver
+the message (either as the sender or a recipient). If our transport breaks and
+we receive no more messages, consistency must not default to &#8220;OK&#8221;. So our
+mechanism must include an expiry after which we warn that consistency has not
+been reached. That is, we need a timer primitive; we cannot just implement
+consistency checks as part of a packet receive-handler.</p>
+<p>As with drop detection, if we reach a good state (here, consistency) <em>after</em>
+the timeout, we should cancel the warning or at least downgrade its severity.
+Also, here the warning is associated with a message that is <em>already displayed</em>
+to the user. Therefore, it is important that the warning is shown not as a
+point-event for the user to dismiss and forget, but as a persistent state
+shown together with the message, in the same space and time.</p>
+</div>
+<div class="section" id="acks-and-full-ack">
+<span id="full-ack"></span><h2>Acks and full-ack<a class="headerlink" href="#acks-and-full-ack" title="Permalink to this headline">¶</a></h2>
+<p>We start by looking at per-message consistency. When we see a message, we want
+to be sure that everyone else also saw it. Rather than trying to enumerate and
+detect all possible failures, we aim for a certainly-good state. We can be sure
+that r saw m, if we see a message by r that refers to m. Conveniently, we
+already have the mechanics for this in our causal order, namely the property
+that every message refers (transitively) to all its ancestors.</p>
+<p>Define that a message m is <strong>acked-by</strong> r iff ∃ m&#8217; ∈ by(r): m &lt; m&#8217;.
+Define that a message m is <strong>fully-acked</strong> iff ∀ r ∈ recipients(m): m
+is acked-by r. <a class="footnote-reference" href="#nvis" id="id1">[1]</a> Both of these depend implicitly on the current
+transcript. An &#8220;ack&#8221; is simply any message that refers to a previous one (the
+one being acked), not necessarily a special ACK message. <a class="footnote-reference" href="#nimp" id="id2">[2]</a></p>
+<p>Once a message is acked by everyone else, we are certain that they have seen
+it, and we reach message consistency. If we did not send the message, we must
+also make sure that we ack it ourselves  - this is necessary for <em>others</em> to
+reach message consistency. After this, the message is <em>fully-acked</em>, and we no
+longer need to worry about it. In a valid transcript, a message m becomes
+fully-acked at the same point for everyone, namely when a process delivers all
+the direct acks { min(by(r) ∩ des(m)) | r ∈ recipients(m) }, des(m)
+being the descendant messages of m. Notice the similarity in structure to the
+definition of context(m) - one may think of these as a &#8220;future&#8221; context(m).
+If and when full-ack is reached, this will contain no ⊥ values.</p>
+<p class="graphviz">
+<img src="../_images/graphviz-2f165abd67ab3538f9a1674c9083795ec4720e9c.png" alt="digraph acks {
+rankdir=BT;
+node [height=0.5, width=0.5, style=filled, label=&quot;&quot;];
+m [fillcolor=&quot;#ff9999&quot;];
+p [fillcolor=&quot;#99ff99&quot;, color=&quot;#ff0000&quot;, label=&quot;p&quot;];
+q [fillcolor=&quot;#9999ff&quot;];
+r [fillcolor=&quot;#ff9999&quot;, color=&quot;#ff0000&quot;, label=&quot;r&quot;];
+s [fillcolor=&quot;#99ff99&quot;, color=&quot;#ff0000&quot;, label=&quot;s&quot;];
+r -&gt; p -&gt; m;
+r -&gt; q -&gt; m;
+s -&gt; q;
+}" />
+</p>
+<p>Background colours indicate authorship, red borders indicate messages that are
+not yet fully-acked. If blue then sends a message referring to r, s, it will
+cause p to become fully-acked, and help r, s along on the way towards being so.
+This is an incremental consistency; full-acks occur as new messages arrive,
+instead of all at once at the end of the session.</p>
+<p>Between when a message is delivered and is fully-acked, we need a way to check
+that it does eventually become fully-acked, and warn or try to recover if this
+process takes too long. The mechanism must be pro-active, so it must be outside
+of the packet send/recv logic. We&#8217;ll call this an &#8220;ack-monitor&#8221;, and it would
+be activated on delivery and de-activated on full-ack. The basic behaviour is
+to warn the user if full-ack is not reached within a grace period. More complex
+behaviours that reduce the failure rate, which is vital for usability, are
+discussed next.</p>
+<table class="docutils footnote" frame="void" id="nvis" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id1">[1]</a></td><td>This definition becomes slightly more complex when we introduce
+<a class="reference internal" href="05-visibility.html"><em>partial visibility</em></a>; see that chapter for details.</td></tr>
+</tbody>
+</table>
+<table class="docutils footnote" frame="void" id="nimp" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id2">[2]</a></td><td>For space-efficiency, one should store <em>unacked</em> recipients instead
+of acked ones: when delivered, each message has a set unackby(m) that is
+equal to recipients(m), and it gradually becomes empty as later messages
+(that ack it) are delivered. When the set becomes empty, its ack-monitor is
+cancelled and a &#8220;fully-acked&#8221; event is emitted. It is also useful to track
+a set unacked() of messages not-yet fully-acked in the current transcript.
+When a message m is delivered, it is added to this set, then removed again
+when unackby(m) becomes empty. TODO: maybe move this to an &#8220;implementation&#8221;
+appendix.</td></tr>
+</tbody>
+</table>
+<div class="section" id="automatic-and-explicit">
+<h3>Automatic and explicit<a class="headerlink" href="#automatic-and-explicit" title="Permalink to this headline">¶</a></h3>
+<p>The ack-monitor should also handle the case (for messages sent by others) where
+we don&#8217;t ack the message ourselves. In a busy session, the user will likely
+send a message within the grace period <em>anyway</em>, that will be implictly treated
+as an ack. In this case, we don&#8217;t need to do anything. However, at the end of a
+session, or during a lull in the conversation, we will need to <em>automatically</em>
+send an <em>explicit</em> ack on behalf of a user. This would be a special message
+that is not displayed as normal in the user&#8217;s UI, but is still kept in the
+transcript causal order data structure, in order to track full-acks.</p>
+<p>There are some nuances about this. The fact the ack is explicit and carries no
+other purpose, means that these need not have ack-monitors registered on them.
+(In the automatic case, this would result in an indefinite sequence of mutual
+acks. This achieves freshness, as described in the next section, but is not
+useful for consistency so we&#8217;ll skip it for now.)</p>
+<p>An implicit ack, such as a normal user message, indicates &#8220;some&#8221; level <a class="footnote-reference" href="#nack" id="id3">[3]</a>
+of understanding of previous messages. Automatic explict acks <em>should not</em> be
+interpreted to carry this same weight, because the user has no control over
+whether they actually read those messages or not. If one desires an explicit
+&#8220;user-level&#8221; ack (e.g. in critical situations) there are a few options:</p>
+<ul class="simple">
+<li>a manual explicit ack, that must be initiated by the user - like acks in
+<a class="reference external" href="https://pond.imperialviolet.org/tech.html">Pond</a>, which are just empty messages.</li>
+<li>a pseudo-manual explicit ack, that may be interpreted like a manual explicit
+ack. This is triggered automatically, but only when the user is interacting
+with the application, or has it focused in the foreground.</li>
+</ul>
+<p>These would be implemented as a supplement to the automatic ack. Other
+projects&#8217; terminology for these concepts include &#8220;delivery receipt&#8221; for
+&#8220;automatic ack&#8221; and &#8220;read receipt&#8221; for &#8220;manual/pseudo-manual ack&#8221;.</p>
+<table class="docutils footnote" frame="void" id="nack" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id3">[3]</a></td><td>The user could avoid reading the messages, but we can&#8217;t do anything
+about this, and it&#8217;s dubious that this could be abused for benefit. In the
+<em>average</em> case, there is some understanding.</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+<div class="section" id="reliability">
+<span id="id4"></span><h2>Reliability<a class="headerlink" href="#reliability" title="Permalink to this headline">¶</a></h2>
+<p>Consistency requires reliability. If some messages aren&#8217;t received by everyone,
+then of course we can&#8217;t verify consistency.</p>
+<p>It is quite common for cryptographic systems to ignore reliability, and assume
+it will be covered by a lower layer. The universal prevalence of TCP today
+probably encourages this. However, our group messaging scenario introduces some
+failure modes that cannot be recovered from by a lower layer, and this section
+will explain these and propose a fix. Such failures will eventually cause a
+failure of our consistency checks, so it is &#8220;safe&#8221; to ignore reliability; but
+unnecessary failures are bad user experience and may incentivise people to
+choose a less secure application, so should be avoided where possible.</p>
+<p>To demonstrate what we mean by &#8220;unnecessary failures&#8221;, we&#8217;ll talk briefly about
+existing reliability mechanisms. Typically, these will continually resend a
+packet until it gets a transport-level ack from the recipient. These are not
+authenticated cryptographically, so transport-level delivery claims are not
+to be trusted, which is why we have message-level acks above. A malicious
+transport-level attacker can also just drop any packets to break reliability.
+However, there are other failure modes that <em>honest</em> transports can&#8217;t recover
+from, but that <em>can</em> be recovered from at the end-to-end message level.</p>
+<p>TCP doesn&#8217;t communicate ack failures to higher layers. If your partner drops
+their connection right after your message is passed to TCP, an ack will never
+be received. Our application might automatically start a new TCP session later,
+but this won&#8217;t know about the lost message from the previous session, resulting
+eventually in consistency failure. In the instant messaging case, these types
+of failure may be rare, but they are still unnecessary. And they become much
+more common and problematic if we want to support asynchronous messaging, where
+not all users are online at once - there is no Internet standard for a generic
+reliable asynchronous transport. <a class="footnote-reference" href="#neml" id="id5">[4]</a></p>
+<p>With transports that run to a third party, such as a TCP session to a central
+reflector server, the transport layer does not detect end-to-end reliability
+failures, even if the server is honest. No matter how hard the server tries to
+guarantee simultaneous presence, some clients may be offline when a packet is
+first sent. Some servers try to mitigate this, by resending packets to those
+offline clients when they come back online. In XMPP, several mechanisms exist
+that approximate this: <a class="reference external" href="http://xmpp.org/extensions/xep-0198.html#resumption">session resumption</a> for short transport failures, and
+<a class="reference external" href="http://xmpp.org/extensions/xep-0045.html#enter-history">discussion history</a> as ad-hoc opportunistic context on joining a channel.
+However, in both cases the scope of reliability is limited, either time-wise or
+packet-count-wise. This is an inherent limitation of public servers: they are
+unable to offer <em>unconditional</em> end-to-end reliability since this requires
+unconditional buffering of unacked packets, but that may be abused by malicious
+clients resulting in denial of service. By contrast, clients have the incentive
+to indefinitely buffer their own not-fully-acked messages.</p>
+<p>That is not to say transport-level, or third-party, or non-authenticated,
+reliability schemes are useless. They are quite cheap to run, and recover from
+most failures. But the non-recoverable failure rate is much higher in certain
+environments or for certain use-cases, so it is prudent to implement a more
+expensive but more robust authenticated end-to-end scheme.</p>
+<table class="docutils footnote" frame="void" id="neml" rules="none">
+<colgroup><col class="label" /><col /></colgroup>
+<tbody valign="top">
+<tr><td class="label"><a class="fn-backref" href="#id5">[4]</a></td><td>Email resending is application specific, has a lot of baggage, and
+is generally considered unsuitable to build clean applications on top of.</td></tr>
+</tbody>
+</table>
+<div class="section" id="resends">
+<h3>Resends<a class="headerlink" href="#resends" title="Permalink to this headline">¶</a></h3>
+<p>Easiest to do resends in the ack-monitor.</p>
+<p>For as long as the message is not fully-acked, we may periodically resend the
+message, in anticipation that our original message was not received for
+whatever reason. This implicit recovery technique results in a simpler protocol
+and transcript, without needing an explicit &#8220;ensure consistency&#8221; message.</p>
+<p>However, ack-monitors for an implicit ack am sent directly after a
+sequence of explict acks from the same sender, should also resend these
+whenever it resends am - recipients must receive anc(am) to be able to deliver
+am, and we have no other local active mechanism to resend those explicit acks.</p>
+<p>TODO
+- refine resends of previous explicit-acks (cf code)</p>
+<p>TODO
+- ack timing rules, cancel warn-states after full-ack
+- discuss overhead of acks</p>
+<p>To simplify resends, we suggest to follow the &#8220;single-ciphertext principle&#8221; -
+each message is communicated as the same ciphertext for everyone, and this
+applies even if parts of it are encrypted to only a subset of the recipients.
+This makes it easy to detect duplicate resent messages, and also allows a
+member to resend a message authored by someone else, which is useful if the
+latter is absent. All members cache this ciphertext in case they have to resend
+it to others. When the message is fully-acked, the cached ciphertext may be
+deleted to save space. This should not affect security of the data, since the
+threat model already includes an eavesdropper that stores all ciphertext.</p>
+<p>However, if an entity can observe multiple recipients receiving the same
+ciphertext - such as an XMPP server - then this links the members. Hiding this
+metadata is outside of the scope of this chapter, and the single-ciphertext
+principle is no worse than existing systems; but newer systems that try to
+explicitly provide unlinkability will need to think about this.</p>
+<p>TODO
+- refine auto-deletion of old ciphertext that has been full-acked (cf code)</p>
+<p>Optimising the exact policy of executing resends can get very complex, so we&#8217;ll
+skip that discussion for now. In practise, we have been using an exponential
+backoff algorithm, which seems to work adequately.</p>
+</div>
+<div class="section" id="duplicates">
+<h3>Duplicates<a class="headerlink" href="#duplicates" title="Permalink to this headline">¶</a></h3>
+<p>When you receive a duplicate message m, this is (in a normal situation) because
+someone thinks we haven&#8217;t acked the message yet - and perhaps we haven&#8217;t. So we
+need to ack it, until we are confident they have received the ack:</p>
+<ul class="simple">
+<li>If m is still in the delivery queue, ignore the duplicate. We don&#8217;t even
+know if it&#8217;s a valid message yet - we haven&#8217;t received all its ancestors.
+If and when we do, we would already set an ack-monitor on it, which will
+handle any future duplicates.</li>
+<li>If we haven&#8217;t yet acked m, the ack-monitor we already set on m will handle
+this situation - i.e. either wait for the user to send an implicit ack, or
+send an explicit ack later.</li>
+<li>If we have already acked m, say with message am, then:<ul>
+<li>If the ack was implicit, then we already set an ack-monitor on am, which
+should handle this situation, resending am if necessary. (Perhaps am was
+already fully-acked, in which case m was sent in error, or due to a heavily
+delayed network, or a replay attack. In any case, the ack-monitor will have
+already been cancelled and we ignore m, which is the correct behaviour.)</li>
+<li>If the ack was explicit, then we don&#8217;t have an ack-monitor on am, so we
+should resend am. (This is the only case we take action on.)</li>
+</ul>
+</li>
+</ul>
+<p>Note that we say &#8220;confidence&#8221;, not &#8220;guarantee&#8221;. This is because with explicit
+acks, we do not check for full-ack (of the ack) - so perhaps it will be dropped
+and the recipient will never see it. (If the network is not dropping messages
+though, we will see their resend m, and be able to act on it as above.)</p>
+<p>We believe that this is not a security problem - it is the responsibility of
+each user to check that all messages they see are fully-acked. If our ack is
+dropped, then even though we don&#8217;t know they have received our ack, we know
+that they will not treat the un-acked (from their POV) message as part of the
+consistent transcript - it is not in their interest to do so. So we don&#8217;t need
+to <em>guarantee</em> that our own explicit acks are fully-acked. This avoids the
+Byzantine agreement problem.</p>
+<p>A related concept that <em>does</em> provide a guarantee for explicit acks, is
+<a class="reference internal" href="03-freshness.html#heartbeats"><span>heartbeats</span></a>. These can be thought of as automatic explicit
+acks that result in an infinite sequence of mutual acks. But their purpose is
+to ensure freshness rather than consistency, and their cost may be unsuitable
+for some asynchronous protocols. So we omit them here, and talk about them
+separately as an optional feature.</p>
+<p>The resend/dedupe scheme outlined above is quite minimal in the messages it
+chooses to resend. Of course we may do more active resending; however this may
+open up the path to DoS attacks. More research can be done here; for now we
+have a good basic scheme with a clear logical justification, so we&#8217;ll continue
+with other topics.</p>
+</div>
+</div>
+<div class="section" id="transcript-consistency">
+<h2>Transcript consistency<a class="headerlink" href="#transcript-consistency" title="Permalink to this headline">¶</a></h2>
+<p>Future consistency, consistency-on-leave.</p>
+<p>Transcript consistency may be constructed simply out of our message consistency
+primitives. When we want to part, we send a &#8220;intend-to-part&#8221; message zm then
+wait for explicit acks to it. Once it is fully-acked, we reach consistency for
+all of anc(zm), which we&#8217;ll treat as the transcript. Recipients should ack
+these immediately, instead of the usual behaviour of waiting a grace period for
+the user to manually send an implicit ack. Since there won&#8217;t be any future
+chance to receive the acks, the sender may wait longer than usual for full-ack.</p>
+<p>If we receive implicit or explicit acks to any message other than zm, we must
+ignore them or display/log them permanently with a warning, because we have no
+chance to verify their consistency. The same goes for implicit acks to zm.</p>
+<p>If we fail to reach full-ack for zm (i.e. time out waiting for it), then we
+still have consistency for all the messages we had previously reached full-ack
+for, which hopefully is almost equal to anc(zm). For all other messages, we
+should display/log them permanently with a warning.</p>
+<p>TODO: construct a similar mechanism for cases where someone else wants to force
+us to part.</p>
+<p>This ensures consistency for messages that we delivered locally, including ones
+we sent. What about messages by others that we haven&#8217;t delivered, including
+ones we haven&#8217;t even received? We&#8217;ll talk about this in the next section.</p>
+</div>
+</div>
+
+
+          </div>
+        </div>
+      </div>
+      <div class="sphinxsidebar" role="navigation" aria-label="main navigation">
+        <div class="sphinxsidebarwrapper">
+  <h3><a href="../index.html">Table Of Contents</a></h3>
+  <ul>
+<li><a class="reference internal" href="#">Consistency</a><ul>
+<li><a class="reference internal" href="#concepts">Concepts</a></li>
+<li><a class="reference internal" href="#acks-and-full-ack">Acks and full-ack</a><ul>
+<li><a class="reference internal" href="#automatic-and-explicit">Automatic and explicit</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#reliability">Reliability</a><ul>
+<li><a class="reference internal" href="#resends">Resends</a></li>
+<li><a class="reference internal" href="#duplicates">Duplicates</a></li>
+</ul>
+</li>
+<li><a class="reference internal" href="#transcript-consistency">Transcript consistency</a></li>
+</ul>
+</li>
+</ul>
+
+  <h4>Previous topic</h4>
+  <p class="topless"><a href="01-ordering.html"
+                        title="previous chapter">Ordering</a></p>
+  <h4>Next topic</h4>
+  <p class="topless"><a href="03-freshness.html"
+                        title="next chapter">Freshness and presence</a></p>
+  <div role="note" aria-label="source link">
+    <h3>This Page</h3>
+    <ul class="this-page-menu">
+      <li><a href="../_sources/causal/02-consistency.txt"
+            rel="nofollow">Show Source</a></li>
+    </ul>
+   </div>
+<div id="searchbox" style="display: none" role="search">
+  <h3>Quick search</h3>
+    <form class="search" action="../search.html" method="get">
+      <input type="text" name="q" />
+      <input type="submit" value="Go" />
+      <input type="hidden" name="check_keywords" value="yes" />
+      <input type="hidden" name="area" value="default" />
+    </form>
+    <p class="searchtip" style="font-size: 90%">
+    Enter search terms or a module, class or function name.
+    </p>
+</div>
+<script type="text/javascript">$('#searchbox').show(0);</script>
+        </div>
+      </div>
+      <div class="clearer"></div>
+    </div>
+    <div class="related" role="navigation" aria-label="related navigation">
+      <h3>Navigation</h3>
+      <ul>
+        <li class="right" style="margin-right: 10px">
+          <a href="../genindex.html" title="General Index"
+             >index</a></li>
+        <li class="right" >
+          <a href="03-freshness.html" title="Freshness and presence"
+             >next</a> |</li>
+        <li class="right" >
+          <a href="01-ordering.html" title="Ordering"
+             >previous</a> |</li>
+        <li class="nav-item nav-item-0"><a href="../index.html">msg-notes 0.0.0 documentation</a> &raquo;</li>
+          <li class="nav-item nav-item-1"><a href="index.html" >Causal ordering</a> &raquo;</li> 
+      </ul>
+    </div>
+    <div class="footer" role="contentinfo">
+        &copy; Copyright 2014-2015 Mega Limited, licensed under CC-BY-SA-4.0.
+      Created using <a href="http://sphinx-doc.org/">Sphinx</a> 1.3.1.
+    </div>
+  </body>
+</html>
